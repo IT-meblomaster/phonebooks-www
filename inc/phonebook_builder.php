@@ -320,3 +320,15 @@ function pb_build_directory(array $config, PDO $pdo): array
 
     return $out;
 }
+
+function pb_has_domain_access(array $adCfg): bool
+{
+    $conn = pb_ad_connect_and_bind($adCfg);
+
+    if ($conn === null) {
+        return false;
+    }
+
+    @ldap_unbind($conn);
+    return true;
+}

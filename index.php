@@ -16,7 +16,7 @@ $pdo = db($config);
 $page = current_page();
 
 // Publiczne strony:
-$publicPages = ['login'];
+$publicPages = ['login','dashboard'];
 
 // Mapowanie nazw na pliki
 $pageFile = __DIR__ . '/pages/' . $page . '.php';
