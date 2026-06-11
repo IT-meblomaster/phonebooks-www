@@ -135,6 +135,20 @@ $totalCount = $data['totalCount'] ?? count($rows);
                                         <?php endif; ?>
                                     </td>
 
+                                <?php elseif ($k === 'phones'): ?>
+                                    <td>
+                                        <?php
+                                        $phoneLines = array_filter(
+                                            array_map('trim', explode("\n", $val)),
+                                            fn($x) => $x !== ''
+                                        );
+                                        foreach ($phoneLines as $idx => $phone):
+                                            if ($idx > 0) echo '<br>';
+                                            echo e($phone);
+                                        endforeach;
+                                        ?>
+                                    </td>
+
                                 <?php else: ?>
                                     <td><?= e($val) ?></td>
                                 <?php endif; ?>
