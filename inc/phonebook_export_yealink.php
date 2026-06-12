@@ -2,9 +2,12 @@
 declare(strict_types=1);
 
 /**
- * Export #2 (Yealink)
+ * inc/phonebook_export_yealink.php
  *
- * @param array<int, array{name:string, phones:array<int, string|int>}> $entries
+ * Yealink nie ma typów — tylko Phone1/Phone2/Phone3.
+ * Kolejność: Work (telephoneNumber) → Home (ipPhone) → Mobile (mobile)
+ *
+ * @param array<int, array{name:string, phones:array<int, array{number:string, type:string}>}> $entries
  */
 function pb_export_yealink_xml(array $entries, string $outFile, string $menuName = 'Meblomaster'): void
 {
@@ -16,50 +19,41 @@ function pb_export_yealink_xml(array $entries, string $outFile, string $menuName
     }
 
     $tmp = $outFile . '.tmp';
-
     $dom = new DOMDocument('1.0', 'UTF-8');
     $dom->formatOutput = true;
 
     $root = $dom->createElement('YealinkIPPhoneBook');
     $dom->appendChild($root);
-
     $root->appendChild($dom->createElement('Title', 'Yealink'));
 
     $menu = $dom->createElement('Menu');
     $menu->setAttribute('Name', (string)$menuName);
 
     foreach ($entries as $row) {
-        $name = trim((string)($row['name'] ?? ''));
+        $name   = trim((string)($row['name'] ?? ''));
         $phones = $row['phones'] ?? [];
 
-        if ($name === '' || !is_array($phones) || count($phones) === 0) {
+        if ($name === '' || !is_array($phones) || !$phones) {
             continue;
         }
 
-        // wyczyść numery + usuń duplikaty (stringujemy)
+        // Wyciągnij numery (zachowaj kolejność z buildera), max 3
         $clean = [];
         foreach ($phones as $p) {
-            $p = trim((string)$p);
-            if ($p === '') continue;
-            $clean[$p] = true;
+            $num = trim((string)($p['number'] ?? ''));
+            if ($num !== '' && !in_array($num, $clean, true)) {
+                $clean[] = $num;
+            }
+            if (count($clean) >= 3) break;
         }
-        $phones = array_keys($clean);
-
-        if (!$phones) continue;
-
-        sort($phones, SORT_NATURAL);
+        if (!$clean) continue;
 
         $unit = $dom->createElement('Unit');
-        $unit->setAttribute('Name', (string)$name);
+        $unit->setAttribute('Name', $name);
         $unit->setAttribute('default_photo', 'Resource:');
 
-        // Phone1..Phone3
-        $maxPhones = 3;
-        $idx = 1;
-        foreach ($phones as $p) {
-            if ($idx > $maxPhones) break;
-            $unit->setAttribute('Phone' . $idx, (string)$p);
-            $idx++;
+        foreach ($clean as $idx => $num) {
+            $unit->setAttribute('Phone' . ($idx + 1), $num);
         }
 
         if (!$unit->hasAttribute('Phone1')) continue;

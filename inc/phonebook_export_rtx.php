@@ -2,18 +2,16 @@
 declare(strict_types=1);
 
 /**
- * Export #3 (RTX) - CSV
+ * inc/phonebook_export_rtx.php
  *
- * Format:
- *   Nazwisko Imie,nr_1,nr_2
+ * Format CSV: Nazwisko Imie,nr_work,nr_home,nr_mobile
  *
- * Zasada konfliktu:
- * - CSV jest rozdzielany przecinkami,
- * - jeśli TEN SAM numer telefonu występuje u kilku osób,
- *   to w polu "Nazwisko Imie" zapisujemy listę osób rozdzieloną średnikiem ';'
- *   (np. "Kowalski Jan;Nowak Adam").
+ * RTX obsługuje 3 numery:
+ *   nr_1 = Work  (telephoneNumber)
+ *   nr_2 = Home  (ipPhone)
+ *   nr_3 = Mobile (mobile)
  *
- * @param array<int, array{name:string, phones:array<int, string|int>}> $entries
+ * @param array<int, array{name:string, phones:array<int, array{number:string, type:string}>}> $entries
  */
 function pb_export_rtx_csv(array $entries, string $outFile): void
 {
@@ -26,20 +24,16 @@ function pb_export_rtx_csv(array $entries, string $outFile): void
 
     $tmp = $outFile . '.tmp';
 
-    // 1) mapowanie numer -> [names...]
-    $namesByNumber = []; // string => array<string,true>
+    // 1) mapowanie numer -> [names...] (dla wykrywania konfliktów)
+    $namesByNumber = [];
     foreach ($entries as $row) {
-        $name = trim((string)($row['name'] ?? ''));
+        $name   = trim((string)($row['name'] ?? ''));
         $phones = $row['phones'] ?? [];
-
-        if ($name === '' || !is_array($phones) || !$phones) {
-            continue;
-        }
+        if ($name === '' || !is_array($phones) || !$phones) continue;
 
         foreach ($phones as $p) {
-            $num = trim((string)$p);
+            $num = trim((string)($p['number'] ?? ''));
             if ($num === '') continue;
-
             if (!isset($namesByNumber[$num])) $namesByNumber[$num] = [];
             $namesByNumber[$num][$name] = true;
         }
@@ -52,37 +46,31 @@ function pb_export_rtx_csv(array $entries, string $outFile): void
     }
 
     foreach ($entries as $row) {
-        $name = trim((string)($row['name'] ?? ''));
+        $name   = trim((string)($row['name'] ?? ''));
         $phones = $row['phones'] ?? [];
+        if ($name === '' || !is_array($phones) || !$phones) continue;
 
-        if ($name === '' || !is_array($phones) || count($phones) === 0) {
-            continue;
-        }
-
-        // wyczyść + deduplikuj numery (string)
-        $clean = [];
+        // Wyciągnij numery wg typu
+        $nr1 = ''; // Work
+        $nr2 = ''; // Home
+        $nr3 = ''; // Mobile
         foreach ($phones as $p) {
-            $num = trim((string)$p);
+            $num  = trim((string)($p['number'] ?? ''));
+            $type = (string)($p['type'] ?? '');
             if ($num === '') continue;
-            $clean[$num] = true;
+            if ($type === 'Work'   && $nr1 === '') { $nr1 = $num; continue; }
+            if ($type === 'Home'   && $nr2 === '') { $nr2 = $num; continue; }
+            if ($type === 'Mobile' && $nr3 === '') { $nr3 = $num; continue; }
         }
-        $phones = array_keys($clean);
-        if (!$phones) continue;
 
-        sort($phones, SORT_NATURAL);
+        if ($nr1 === '' && $nr2 === '' && $nr3 === '') continue;
 
-        // RTX format: tylko 2 numery
-        $nr1 = $phones[0] ?? '';
-        $nr2 = $phones[1] ?? '';
-
-        // konflikt: jeżeli nr1 lub nr2 ma wielu właścicieli -> dopisz do pola nazwy listę rozdzieloną ';'
+        // Konflikt: jeżeli numer ma wielu właścicieli -> dopisz do pola nazwy
         $owners = [$name => true];
-
-        foreach ([$nr1, $nr2] as $num) {
+        foreach ([$nr1, $nr2, $nr3] as $num) {
             if ($num === '') continue;
-
-            $otherOwners = $namesByNumber[$num] ?? null;
-            if (is_array($otherOwners) && count($otherOwners) > 1) {
+            $otherOwners = $namesByNumber[$num] ?? [];
+            if (count($otherOwners) > 1) {
                 foreach ($otherOwners as $ownerName => $_) {
                     $ownerName = trim((string)$ownerName);
                     if ($ownerName !== '') $owners[$ownerName] = true;
@@ -94,12 +82,9 @@ function pb_export_rtx_csv(array $entries, string $outFile): void
         $nameField = str_replace(',', '', $nameField);
         $nameField = substr($nameField, 0, 21);
 
-        // CSV separator = ',', wartości z przecinkami zostaną poprawnie zacytowane przez fputcsv
-        fwrite($fh, $nameField . ',' . $nr1 . ',' . $nr2 . "\n");
+        fwrite($fh, $nameField . ',' . $nr1 . ',' . $nr2 . ',' . $nr3 . "\n");
     }
 
     fclose($fh);
-
-    // atomowa podmiana
     rename($tmp, $outFile);
 }

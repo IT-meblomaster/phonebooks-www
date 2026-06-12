@@ -5,7 +5,7 @@ declare(strict_types=1);
  * inc/ad.php
  *
  * Zwraca aktywnych userów z AD, ale "spłaszczone":
- * - jeżeli user ma telephoneNumber i mobile -> zwracamy 2 rekordy
+ * - jeżeli user ma telephoneNumber, ipPhone i/lub mobile -> zwracamy osobny rekord na każdy numer
  * - każdy rekord ma pole 'number' (to jest numer telefonu)
  *
  * Każdy rekord:
@@ -26,7 +26,6 @@ function ad_connect(array $cfg)
         return null;
     }
 
-    // budujemy URI (ldap://host:389)
     $uri = $host;
     if (!preg_match('~^ldaps?://~i', $uri)) {
         $uri = 'ldap://' . $uri;
@@ -59,7 +58,8 @@ function ad_bind($ldap, array $cfg): bool
 }
 
 /**
- * Pobiera aktywnych userów z AD, którzy mają telephoneNumber lub mobile.
+ * Pobiera aktywnych userów z AD, którzy mają telephoneNumber, ipPhone lub mobile.
+ * Kolejność numerów na rekord: telephoneNumber → ipPhone → mobile.
  * Pomija zablokowanych (ACCOUNTDISABLE).
  *
  * @return array<int, array{number:string, displayName:string, sAMAccountName:string, dn:string}>
@@ -85,18 +85,18 @@ function ad_list_active_users_with_phones(array $cfg): array
         return [];
     }
 
-    // aktywni + mają telephoneNumber lub mobile
     $filter = "(&
       (objectCategory=person)
       (objectClass=user)
       (|
         (telephoneNumber=*)
+        (ipPhone=*)
         (mobile=*)
       )
       (!(userAccountControl:1.2.840.113556.1.4.803:=2))
     )";
 
-    $attrs = ['dn', 'sAMAccountName', 'displayName', 'telephoneNumber', 'mobile'];
+    $attrs = ['dn', 'sAMAccountName', 'displayName', 'telephoneNumber', 'ipPhone', 'mobile'];
 
     $sr = @ldap_search($ldap, $baseDn, $filter, $attrs);
     if (!$sr) {
@@ -117,11 +117,13 @@ function ad_list_active_users_with_phones(array $cfg): array
         $sam = (string)($e['samaccountname'][0] ?? '');
         $dn = (string)($e['dn'] ?? '');
 
-        // bierzemy max 1 z telephoneNumber i max 1 z mobile (wg Twojego założenia)
+        // Stała kolejność: telephoneNumber → ipPhone → mobile
         $nums = [];
-
         if (!empty($e['telephonenumber'][0])) {
             $nums[] = trim((string)$e['telephonenumber'][0]);
+        }
+        if (!empty($e['ipphone'][0])) {
+            $nums[] = trim((string)$e['ipphone'][0]);
         }
         if (!empty($e['mobile'][0])) {
             $nums[] = trim((string)$e['mobile'][0]);
@@ -132,10 +134,10 @@ function ad_list_active_users_with_phones(array $cfg): array
 
         foreach ($nums as $num) {
             $out[] = [
-                'number' => $num,
-                'displayName' => $displayName,
+                'number'         => $num,
+                'displayName'    => $displayName,
                 'sAMAccountName' => $sam,
-                'dn' => $dn,
+                'dn'             => $dn,
             ];
         }
     }
@@ -208,6 +210,7 @@ function ad_list_active_users_with_contact_data(array $cfg): array
       (!(userAccountControl:1.2.840.113556.1.4.803:=2))
       (|
         (telephoneNumber=*)
+        (ipPhone=*)
         (mobile=*)
         (mail=*)
       )
@@ -216,6 +219,7 @@ function ad_list_active_users_with_contact_data(array $cfg): array
     $attrs = [
         'displayName',
         'telephoneNumber',
+        'ipPhone',
         'mobile',
         'mail',
         'physicaldeliveryofficename',
@@ -243,9 +247,13 @@ function ad_list_active_users_with_contact_data(array $cfg): array
 
         $name = ad_split_first_last_name($displayName);
 
+        // Stała kolejność: telephoneNumber → ipPhone → mobile
         $phones = [];
         if (!empty($e['telephonenumber'][0])) {
             $phones[] = trim((string)$e['telephonenumber'][0]);
+        }
+        if (!empty($e['ipphone'][0])) {
+            $phones[] = trim((string)$e['ipphone'][0]);
         }
         if (!empty($e['mobile'][0])) {
             $phones[] = trim((string)$e['mobile'][0]);
@@ -272,6 +280,5 @@ function ad_list_active_users_with_contact_data(array $cfg): array
         ];
     }
 
-//exit;
     return $out;
 }

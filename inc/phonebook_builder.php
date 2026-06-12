@@ -2,10 +2,12 @@
 declare(strict_types=1);
 
 /**
- * lib/phonebook_builder.php
+ * inc/phonebook_builder.php
  *
  * Wynik:
- * @return array<int, array{name:string, phones:array<int,string>}>
+ * @return array<int, array{name:string, phones:array<int, array{number:string, type:string}>}>
+ *
+ * type: 'Work' = telephoneNumber, 'Home' = ipPhone, 'Mobile' = mobile
  */
 
 function pb_db_connect(array $config): PDO
@@ -41,56 +43,43 @@ function pb_normalize_name(string $name): string
     return trim($name);
 }
 
-/**
- * Pomocniczo: zamiana "Imię Nazwisko" -> "Nazwisko Imię"
- * (dla prostych przypadków; jeśli nie da się rozpoznać, zwraca oryginał)
- */
 if (!function_exists('pb_swap_first_last_name')) {
-    /**
-     * Pomocniczo: zamiana "Imię Nazwisko" -> "Nazwisko Imię"
-     * (dla prostych przypadków; jeśli nie da się rozpoznać, zwraca oryginał)
-     */
     function pb_swap_first_last_name(string $name): string
     {
         $name = trim($name);
         if ($name === '') return '';
 
-        // Jeśli ktoś ma format "Nazwisko, Imię" -> "Nazwisko Imię"
         if (strpos($name, ',') !== false) {
             $parts = array_map('trim', explode(',', $name, 2));
-            $last = $parts[0] ?? '';
+            $last  = $parts[0] ?? '';
             $first = $parts[1] ?? '';
-            $out = trim($last . ' ' . $first);
+            $out   = trim($last . ' ' . $first);
             return $out !== '' ? $out : $name;
         }
 
-        // Format "Imię [Imię2 ...] Nazwisko" -> "Nazwisko Imię [Imię2 ...]"
         $parts = preg_split('/\s+/', $name);
         if (!$parts || count($parts) < 2) return $name;
 
-        $last = array_pop($parts);
+        $last  = array_pop($parts);
         $first = implode(' ', $parts);
-
-        $out = trim($last . ' ' . $first);
+        $out   = trim($last . ' ' . $first);
         return $out !== '' ? $out : $name;
     }
 }
 
 function pb_ad_connect_and_bind(array $adCfg)
 {
-    $host = rtrim((string)($adCfg['host'] ?? ''), '/');
-    $port = (int)($adCfg['port'] ?? 389);
-    $base = (string)($adCfg['base_dn'] ?? '');
+    $host   = rtrim((string)($adCfg['host'] ?? ''), '/');
+    $port   = (int)($adCfg['port'] ?? 389);
+    $base   = (string)($adCfg['base_dn'] ?? '');
     $bindDn = (string)($adCfg['bind_dn'] ?? '');
     $bindPw = (string)($adCfg['bind_password'] ?? '');
 
-    if ($host === '' || $base === '' || $bindDn === '') {
-        return null;
-    }
+    if ($host === '' || $base === '' || $bindDn === '') return null;
 
     $uri = $host;
     if (!preg_match('~^ldaps?://~i', $uri)) $uri = 'ldap://' . $uri;
-    if (!preg_match('~:\d+$~', $uri)) $uri .= ':' . $port;
+    if (!preg_match('~:\d+$~', $uri))       $uri .= ':' . $port;
 
     $ldap = ldap_connect($uri);
     if (!$ldap) return null;
@@ -107,10 +96,15 @@ function pb_ad_connect_and_bind(array $adCfg)
 }
 
 /**
- * AD: aktywni userzy z telephoneNumber i/lub mobile.
- * Zwraca strukturę:
+ * AD: aktywni userzy z telephoneNumber, ipPhone i/lub mobile.
+ *
+ * Zwraca strukturę z typami:
  * [
- *   ['displayName' => 'Jan Kowalski', 'phones' => ['201','555111222']],
+ *   ['displayName' => 'Jan Kowalski', 'phones' => [
+ *       ['number' => '201', 'type' => 'Work'],
+ *       ['number' => '5001', 'type' => 'Home'],
+ *       ['number' => '+48600123456', 'type' => 'Mobile'],
+ *   ]],
  *   ...
  * ]
  */
@@ -122,18 +116,18 @@ function pb_ad_list_active_users_with_phones(array $adCfg): array
     $ldap = pb_ad_connect_and_bind($adCfg);
     if (!$ldap) return [];
 
-    // aktywni + mają telephoneNumber lub mobile
     $filter = "(&
       (objectCategory=person)
       (objectClass=user)
       (|
         (telephoneNumber=*)
+        (ipPhone=*)
         (mobile=*)
       )
       (!(userAccountControl:1.2.840.113556.1.4.803:=2))
     )";
 
-    $attrs = ['displayName', 'telephoneNumber', 'mobile'];
+    $attrs = ['displayName', 'telephoneNumber', 'ipPhone', 'mobile'];
 
     $sr = @ldap_search($ldap, $base, $filter, $attrs);
     if (!$sr) {
@@ -144,7 +138,7 @@ function pb_ad_list_active_users_with_phones(array $adCfg): array
     $entries = ldap_get_entries($ldap, $sr);
     ldap_unbind($ldap);
 
-    $out = [];
+    $out   = [];
     $count = is_array($entries) ? (int)($entries['count'] ?? 0) : 0;
 
     for ($i = 0; $i < $count; $i++) {
@@ -155,20 +149,23 @@ function pb_ad_list_active_users_with_phones(array $adCfg): array
 
         $phones = [];
 
-        $tel = $e['telephonenumber'][0] ?? null;
-        if ($tel !== null) $phones[] = trim((string)$tel);
+        if (!empty($e['telephonenumber'][0])) {
+            $phones[] = ['number' => trim((string)$e['telephonenumber'][0]), 'type' => 'Work'];
+        }
+        if (!empty($e['ipphone'][0])) {
+            $phones[] = ['number' => trim((string)$e['ipphone'][0]), 'type' => 'Home'];
+        }
+        if (!empty($e['mobile'][0])) {
+            $phones[] = ['number' => trim((string)$e['mobile'][0]), 'type' => 'Mobile'];
+        }
 
-        $mob = $e['mobile'][0] ?? null;
-        if ($mob !== null) $phones[] = trim((string)$mob);
-
-        // deduplikacja + usuń puste
-        $phones = array_values(array_unique(array_filter($phones, fn($x) => $x !== '')));
-
+        // usuń puste numery
+        $phones = array_values(array_filter($phones, fn($p) => $p['number'] !== ''));
         if (!$phones) continue;
 
         $out[] = [
             'displayName' => $name,
-            'phones' => $phones,
+            'phones'      => $phones,
         ];
     }
 
@@ -176,61 +173,64 @@ function pb_ad_list_active_users_with_phones(array $adCfg): array
 }
 
 /**
- * Buduje listę kontaktów:
- * 1) AD (telephoneNumber + mobile) => jeśli duplikat numeru w AD, nazwa to lista osób
- * 2) DB phones tylko te, których nie było w AD
- * 3) DB override (etykieta) wygrywa
- * 4) WYNIK: jeden wpis = jeden numer (phones=[numer])
+ * Buduje listę kontaktów.
  *
- * @return array<int, array{name:string, phones:array<int,string>}>
+ * Wynik: jeden wpis na kontakt.
+ * phones: tablica ['number' => string, 'type' => string]
+ * Dla numerów z DB (bez pola AD) typ jest zgadywany z długości numeru:
+ *   <= 6 znaków  -> Work
+ *   >= 11 znaków -> Mobile
+ *   pozostałe    -> Home
+ *
+ * @return array<int, array{name:string, phones:array<int, array{number:string, type:string}>}>
  */
 function pb_build_directory(array $config, PDO $pdo): array
 {
-    // results: number => ['number'=>string, 'name'=>string, 'phone_id'=>?int]
+    // number => ['number', 'name', 'phone_id', 'type']
     $results = [];
-    $seen = [];
+    $seen    = [];
 
-    // do agregacji duplikatów w AD: number => [names...]
-    $adNamesByNumber = [];
+    $adNamesByNumber = [];  // number => [names...]
 
     // 1) AD
-    $adCfg = $config['ad'] ?? null;
+    $adCfg   = $config['ad'] ?? null;
     $adUsers = is_array($adCfg) ? pb_ad_list_active_users_with_phones($adCfg) : [];
 
     foreach ($adUsers as $u) {
         $name = trim((string)($u['displayName'] ?? ''));
         if ($name === '') continue;
 
-        // zamiana imię/nazwisko: nazwisko pierwsze
-        $name = pb_swap_first_last_name($name);
-
+        $name   = pb_swap_first_last_name($name);
         $phones = $u['phones'] ?? [];
         if (!is_array($phones) || !$phones) continue;
 
-        foreach ($phones as $num) {
-            $num = trim((string)$num);
+        foreach ($phones as $p) {
+            $num  = trim((string)($p['number'] ?? ''));
+            $type = (string)($p['type'] ?? 'Work');
             if ($num === '') continue;
 
             $adNamesByNumber[$num][] = $name;
 
-            // trzymamy rekord po numerze (name uzupełnimy po zebraniu wszystkich)
-            $results[$num] = [
-                'number' => $num,
-                'name' => '',        // uzupełnimy niżej
-                'phone_id' => null,
-            ];
-            $seen[$num] = true;
+            if (!isset($results[$num])) {
+                $results[$num] = [
+                    'number'   => $num,
+                    'name'     => '',
+                    'phone_id' => null,
+                    'type'     => $type,
+                ];
+                $seen[$num] = true;
+            }
         }
     }
 
-    // po zebraniu wszystkich osób: number => "Nazwisko Imię, Nazwisko Imię, ..."
+    // Uzupełnij nazwy (agregacja duplikatów)
     foreach ($adNamesByNumber as $num => $names) {
         $names = array_values(array_unique(array_filter(array_map('trim', $names), fn($x) => $x !== '')));
         if (!$names) continue;
         $results[$num]['name'] = implode(', ', $names);
     }
 
-    // 2) DB phones: dokładamy tylko numery nieobecne w AD + dopinamy phone_id dla tych z AD
+    // 2) DB phones
     $dbPhones = $pdo->query("SELECT id, number FROM phones")->fetchAll();
     foreach ($dbPhones as $p) {
         $pid = (int)($p['id'] ?? 0);
@@ -242,25 +242,36 @@ function pb_build_directory(array $config, PDO $pdo): array
             continue;
         }
 
+        // Zgaduj typ z długości numeru
+        $len  = strlen(preg_replace('/\D/', '', $num));
+        if ($len >= 11) {
+            $type = 'Mobile';
+        } elseif ($len <= 6) {
+            $type = 'Work';
+        } else {
+            $type = 'Home';
+        }
+
         $results[$num] = [
-            'number' => $num,
-            'name' => '',
+            'number'   => $num,
+            'name'     => '',
             'phone_id' => $pid,
+            'type'     => $type,
         ];
         $seen[$num] = true;
     }
 
-    // 3) Overrides (etykiety) wygrywają dla numerów z DB phones
+    // 3) Overrides (etykiety) wygrywają
     $assignments = $pdo->query("
-      SELECT
-        p.id AS phone_id,
-        p.number,
-        de.display_name AS label_name
-      FROM phones p
-      JOIN phone_assignments pa
-        ON pa.phone_id = p.id AND pa.valid_to IS NULL
-      JOIN directory_entries de
-        ON de.id = pa.directory_entry_id
+        SELECT
+            p.id   AS phone_id,
+            p.number,
+            de.display_name AS label_name
+        FROM phones p
+        JOIN phone_assignments pa
+            ON pa.phone_id = p.id AND pa.valid_to IS NULL
+        JOIN directory_entries de
+            ON de.id = pa.directory_entry_id
     ")->fetchAll();
 
     foreach ($assignments as $a) {
@@ -268,52 +279,55 @@ function pb_build_directory(array $config, PDO $pdo): array
         if ($num === '') continue;
 
         if (!isset($results[$num])) {
-            // teoretycznie nie powinno się zdarzyć, ale nie gubimy danych
+            $len  = strlen(preg_replace('/\D/', '', $num));
+            $type = $len >= 11 ? 'Mobile' : ($len <= 6 ? 'Work' : 'Home');
             $results[$num] = [
-                'number' => $num,
-                'name' => '',
+                'number'   => $num,
+                'name'     => '',
                 'phone_id' => (int)($a['phone_id'] ?? 0),
+                'type'     => $type,
             ];
         }
-
-        // override wygrywa (bez zmian)
         $results[$num]['name'] = trim((string)($a['label_name'] ?? ''));
     }
 
-    // sort po numerze
-    ksort($results, SORT_NATURAL);
-
-    // 4) WYNIK: grupujemy po nazwie kontaktu
-    // - Yealink: 1 Unit na nazwę, Phone1..PhoneN
-    // - Grandstream: 1 Contact na nazwę, wiele <Phone> w środku
-    //
-    // Filtr: tylko pełne rekordy (name + number). Częściowo puste pomijamy.
-
-    $byName = []; // name => set(number=>true)
+    // 4) Grupowanie po nazwie kontaktu
+    // name => [ type => number ] (jeden numer per typ, Work/Home/Mobile)
+    $byName = [];
 
     foreach ($results as $r) {
         $name = pb_normalize_name(trim((string)($r['name'] ?? '')));
         $num  = trim((string)($r['number'] ?? ''));
-
+        $type = (string)($r['type'] ?? 'Work');
         if ($name === '' || $num === '') continue;
 
         if (!isset($byName[$name])) $byName[$name] = [];
-        $byName[$name][$num] = true; // deduplikacja numerów w obrębie kontaktu
+        // Nie nadpisuj jeśli typ już zajęty
+        if (!isset($byName[$name][$type])) {
+            $byName[$name][$type] = $num;
+        }
     }
 
-    // stabilne sortowanie nazw
+    // Sortowanie nazw
     $names = array_keys($byName);
     sort($names, SORT_NATURAL);
 
+    // Stała kolejność typów w wyjściu: Work → Home → Mobile
+    $typeOrder = ['Work', 'Home', 'Mobile'];
+
     $out = [];
     foreach ($names as $name) {
-        $phones = array_keys($byName[$name]);
-        sort($phones, SORT_NATURAL);
-
+        $phonesByType = $byName[$name];
+        $phones = [];
+        foreach ($typeOrder as $type) {
+            if (isset($phonesByType[$type])) {
+                $phones[] = ['number' => $phonesByType[$type], 'type' => $type];
+            }
+        }
         if (!$phones) continue;
 
         $out[] = [
-            'name' => $name,
+            'name'   => $name,
             'phones' => $phones,
         ];
     }
@@ -324,11 +338,7 @@ function pb_build_directory(array $config, PDO $pdo): array
 function pb_has_domain_access(array $adCfg): bool
 {
     $conn = pb_ad_connect_and_bind($adCfg);
-
-    if ($conn === null) {
-        return false;
-    }
-
+    if ($conn === null) return false;
     @ldap_unbind($conn);
     return true;
 }
